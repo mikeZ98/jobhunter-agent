@@ -216,7 +216,9 @@ def build_daily_graph(deps: Deps):
                 letter_md = letter.to_markdown(deps.profile)
                 (out_dir / "cover_letter.md").write_text(letter_md)
                 files["cover_letter_md"] = out_dir / "cover_letter.md"
-                files["cover_letter_text"] = "\n\n".join([letter.greeting, *letter.paragraphs, letter.closing])
+                files["cover_letter_text"] = "\n\n".join(
+                    [letter.greeting, *letter.paragraphs, letter.closing]
+                )
                 if await assets_agent.markdown_to_pdf(letter_md, out_dir / "cover_letter.pdf"):
                     files["cover_letter_pdf"] = out_dir / "cover_letter.pdf"
             if isinstance(cv, BaseException):

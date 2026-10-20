@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint & types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+          enable-cache: true
+      - run: uv sync --locked --all-extras
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy src
+
+  test:
+    name: Tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.12" }
+          - { os: ubuntu-latest, python: "3.13" }
+          # macOS runs the Apple Notes JXA compile test that skips elsewhere.
+          - { os: macos-latest, python: "3.13" }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync --locked --all-extras
+      # Chromium for the real-browser autofill test (fills a form, asserts it is never submitted).
+      - name: Install Chromium
+        run: uv run playwright install ${{ runner.os == 'Linux' && '--with-deps' || '' }} chromium
+      # No Ollama, no network services: boards and LLM inference are faked in the suite.
+      - run: uv run pytest -ra

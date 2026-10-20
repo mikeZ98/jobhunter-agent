@@ -9,7 +9,8 @@
 [![Ollama](https://img.shields.io/badge/LLM-Ollama%20(local)-000000)](https://ollama.com/)
 [![Pydantic v2](https://img.shields.io/badge/validation-Pydantic%20v2-E92063?logo=pydantic&logoColor=white)](https://docs.pydantic.dev/)
 [![Typst](https://img.shields.io/badge/documents-Typst-239DAD)](https://typst.app/)
-[![pytest 82/82 passing](https://img.shields.io/badge/pytest-82%2F82%20passing-2EA44F?logo=pytest&logoColor=white)](#testing)
+[![CI](https://github.com/mikeZ98/jobhunter-agent/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mikeZ98/jobhunter-agent/actions/workflows/ci.yml)
+[![tests: 82](https://img.shields.io/badge/tests-82-2EA44F?logo=pytest&logoColor=white)](#testing)
 [![Ruff](https://img.shields.io/badge/lint-ruff-D7FF64)](https://docs.astral.sh/ruff/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -401,6 +402,8 @@ tests/test_scrapers_parse.py .....                                       [100%]
 | `test_notes.py` | 2 | HTML escaping, JXA script compiles (macOS) |
 
 Two tests depend on the platform: the Apple Notes JXA compile test skips outside macOS, and the real-browser autofill test skips if Chromium isn't installed.
+
+[CI](.github/workflows/ci.yml) runs ruff, `ruff format --check` and mypy, then the suite on Ubuntu (Python 3.12 and 3.13) and macOS (Python 3.13) with Chromium installed. On Ubuntu that gives 81 passed and 1 skipped (the macOS-only JXA test); on macOS all 82 pass.
 
 ```bash
 uv run ruff check . && uv run mypy src   # lint + types
