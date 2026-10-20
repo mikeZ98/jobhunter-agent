@@ -1,0 +1,54 @@
+# JobHunter-Agent configuration. Every key can be overridden with env vars: JH_<SECTION>__<KEY>
+# e.g. JH_SCRAPER__HEADLESS=false  JH_LLM__PREFER_LOCAL=false
+
+log_level = "INFO"
+
+[search]
+keywords = ["Python Developer", "Python Backend", "LLM Engineer", "GenAI Engineer", "Machine Learning Engineer", "AI Engineer"]
+jjit_categories = ["python", "ai", "data"]
+nfj_requirements = ["python"]
+nfj_categories = ["backend", "artificial-intelligence", "data"]
+seniority = ["junior", "mid"]
+linkedin_location = "Poland"
+max_age_days = 3
+max_pages_per_board = 3
+
+[scraper]
+enabled_boards = ["justjoinit", "nofluffjobs", "pracuj", "rocketjobs", "linkedin"]
+delay_mean = 3.2
+delay_stddev = 1.1
+headless = true
+browser_channel = "chrome"   # use installed Google Chrome; set to "" for bundled Chromium
+max_enrich_per_board = 60
+
+[llm]
+ollama_base_url = "http://localhost:11434"
+# vllm_base_url = "http://gpu-box:8000/v1"
+prefer_local = true
+local_only = false           # true -> never call Anthropic/OpenAI, even if keys are set
+embedding_model = "nomic-embed-text"
+# Ollama tags (from `ollama list`), best first. The router skips any that don't fit in free memory.
+fast_models = ["qwen2.5-coder:7b", "llama3.1:8b"]       # extract / score / validate
+chat_models = ["llama3.1:8b", "qwen2.5-coder:7b"]       # form answers / LinkedIn replies
+creative_models = ["llama3.1:8b", "qwen2.5-coder:7b"]   # Polish cover letter + CV
+interview_models = ["llama3.1:8b", "qwen2.5-coder:7b"]
+# cloud fallback, used only when local_only = false and a key is set
+anthropic_fast_model = "claude-haiku-5-5"
+anthropic_creative_model = "claude-sonnet-5-5"
+max_concurrency = 2
+memory_headroom_gb = 2.5
+
+[scoring]
+min_daily = 10
+max_daily = 15
+min_score = 55
+llm_shortlist_size = 40
+weight_embedding = 0.25
+weight_skills = 0.30
+weight_llm = 0.45
+uop_to_b2b_factor = 1.25
+
+[notes]
+enabled = true
+folder = "Job Search"
+# account = "iCloud"

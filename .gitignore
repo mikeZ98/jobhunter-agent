@@ -1,0 +1,45 @@
+# ── secrets & personal data (never commit) ─────────────────────────────
+.env
+.env.*
+# profile.json, base_cv.md and their backups; `jobhunter init` recreates them from src/jobhunter/examples/
+data/
+# session cookies / Playwright storage_state per board
+.state/
+# personal search config; template lives in src/jobhunter/examples/jobhunter.example.toml
+jobhunter.toml
+*.bak
+*.bak-*
+
+# ── local run outputs ──────────────────────────────────────────────────
+# tailored CVs, cover letters, digests (docs/assets/sample/ holds a fictional example)
+output/
+logs/
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# ── python / tooling caches ────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# ── editors, OS, scratch ───────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+scratch/
+scratchpad/
+tmp/
+.claude/

@@ -1,0 +1,84 @@
+{
+  "first_name": "Jan",
+  "last_name": "Kowalski",
+  "email": "jan.kowalski@example.com",
+  "phone": "+48 600 000 000",
+  "city": "Warszawa",
+  "linkedin_url": "https://www.linkedin.com/in/jan-kowalski",
+  "github_url": "https://github.com/jankowalski",
+  "portfolio_url": null,
+  "headline": "Python Backend & GenAI Engineer — FastAPI, RAG, LLM agents",
+  "target_roles": ["Python Backend Developer", "GenAI / LLM Engineer", "Machine Learning Engineer"],
+  "seniority": "mid",
+  "skills": [
+    {"name": "Python", "years": 4, "level": 5, "aliases": ["python3"]},
+    {"name": "FastAPI", "years": 3, "level": 5},
+    {"name": "Django", "years": 2, "level": 3},
+    {"name": "PostgreSQL", "years": 3, "level": 4, "aliases": ["postgres"]},
+    {"name": "Redis", "years": 2, "level": 3},
+    {"name": "Docker", "years": 3, "level": 4},
+    {"name": "Kubernetes", "years": 1, "level": 2, "aliases": ["k8s"]},
+    {"name": "AWS", "years": 2, "level": 3},
+    {"name": "LangChain", "years": 1.5, "level": 4},
+    {"name": "LangGraph", "years": 1, "level": 4},
+    {"name": "LLM", "years": 2, "level": 4, "aliases": ["GenAI", "Large Language Models"]},
+    {"name": "RAG", "years": 1.5, "level": 4},
+    {"name": "PyTorch", "years": 1, "level": 3},
+    {"name": "scikit-learn", "years": 2, "level": 3, "aliases": ["sklearn"]},
+    {"name": "pandas", "years": 3, "level": 4},
+    {"name": "SQLAlchemy", "years": 3, "level": 4},
+    {"name": "Celery", "years": 2, "level": 3},
+    {"name": "REST API", "years": 4, "level": 5, "aliases": ["REST"]},
+    {"name": "Git", "years": 4, "level": 4},
+    {"name": "CI", "years": 3, "level": 3, "aliases": ["GitHub Actions", "CI/CD"]},
+    {"name": "Linux", "years": 4, "level": 4},
+    {"name": "pytest", "years": 3, "level": 4}
+  ],
+  "projects": [
+    {
+      "name": "DocuMind",
+      "summary": "Production RAG assistant over 40k internal documents for a fintech client.",
+      "stack": ["Python", "FastAPI", "LangGraph", "PostgreSQL", "pgvector", "Redis", "Docker", "AWS"],
+      "highlights": [
+        "Cut answer latency p95 from 9.1s to 2.4s with hybrid BM25+vector retrieval and response streaming",
+        "Built an offline eval harness (RAGAS + 300 labelled Q/A) that gated every prompt/model change in CI",
+        "Served ~1.2k daily active users; 99.9% uptime over 6 months"
+      ],
+      "role_tags": ["genai", "backend"]
+    },
+    {
+      "name": "Pricing API",
+      "summary": "High-throughput pricing microservice for an e-commerce platform.",
+      "stack": ["Python", "FastAPI", "PostgreSQL", "SQLAlchemy", "Celery", "Redis", "Kubernetes"],
+      "highlights": [
+        "Sustained 1.8k req/s at p99 < 60 ms after query-plan tuning and Redis read-through caching",
+        "Migrated a Django monolith endpoint to async FastAPI with zero downtime (shadow traffic + feature flags)"
+      ],
+      "role_tags": ["backend"]
+    },
+    {
+      "name": "Churn Predictor",
+      "summary": "Customer churn model and batch scoring pipeline.",
+      "stack": ["Python", "scikit-learn", "pandas", "PyTorch", "Docker"],
+      "highlights": [
+        "Gradient-boosted model with ROC-AUC 0.87, retention campaign targeting improved conversions by 14%",
+        "Nightly batch scoring on 2M customers with drift monitoring"
+      ],
+      "role_tags": ["ml"]
+    }
+  ],
+  "languages": ["Polski (ojczysty)", "Angielski (C1)"],
+  "remote_preference": ["remote", "hybrid"],
+  "acceptable_cities": ["Warszawa"],
+  "min_b2b_monthly_pln": 13000,
+  "min_uop_monthly_pln": 11000,
+  "expected_b2b_monthly_pln": 18000,
+  "notice_period": "1 miesiąc",
+  "availability": "Dostępny od 1. dnia przyszłego miesiąca",
+  "excluded_companies": [],
+  "excluded_keywords": ["java", "php", ".net", "tester", "qa ", "sap", "salesforce", "embedded"],
+  "extra_answers": {
+    "pozwolenie na pracę|work permit|authori[sz]ed to work": "Tak — obywatel UE, pełne prawo do pracy w Polsce.",
+    "how did you hear|skąd wiesz|źródło": "Ogłoszenie na portalu z ofertami pracy."
+  }
+}

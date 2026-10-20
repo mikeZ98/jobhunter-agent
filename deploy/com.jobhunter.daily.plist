@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily run at 07:30 (Mon–Fri). Install:
+    sed "s|__PROJECT__|$PWD|g; s|__UV__|$(which uv)|g" deploy/com.jobhunter.daily.plist > ~/Library/LaunchAgents/com.jobhunter.daily.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.jobhunter.daily.plist
+  Run now:   launchctl kickstart gui/$(id -u)/com.jobhunter.daily
+  Remove:    launchctl bootout gui/$(id -u)/com.jobhunter.daily
+  Runs as a LaunchAgent (your GUI session) so osascript can reach Notes. Autofill is never scheduled:
+  it needs you at the keyboard — run `jobhunter apply` when you're ready.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.jobhunter.daily</string>
+  <key>WorkingDirectory</key><string>__PROJECT__</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__UV__</string><string>run</string><string>jobhunter</string><string>run</string><string>--inbox</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>7</integer><key>Minute</key><integer>30</integer></dict>
+  </array>
+  <key>StandardOutPath</key><string>__PROJECT__/logs/launchd.out.log</string>
+  <key>StandardErrorPath</key><string>__PROJECT__/logs/launchd.err.log</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>Nice</key><integer>5</integer>
+</dict>
+</plist>

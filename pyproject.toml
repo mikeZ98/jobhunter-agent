@@ -1,0 +1,77 @@
+[project]
+name = "jobhunter-agent"
+version = "0.1.0"
+description = "Human-in-the-loop multi-agent system for tech job sourcing, tailoring and application prep."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+keywords = ["langgraph", "ollama", "llm", "agents", "pydantic", "typst", "job-search"]
+dependencies = [
+    # Orchestration + LLM
+    "langgraph>=1.0",
+    "instructor>=1.7",
+    "openai>=1.55",          # also the client for Ollama / vLLM (OpenAI-compatible /v1)
+    "anthropic>=0.45",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    # Acquisition
+    "curl-cffi>=0.9",
+    "playwright>=1.49",
+    "playwright-stealth>=2.0",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.3",
+    "httpx>=0.27",
+    # Scoring / rendering
+    "numpy>=2.0",
+    "markdown-it-py>=3.0",
+    "psutil>=6.0",
+    # CLI + observability
+    "typer>=0.15",
+    "rich>=13.9",
+    "loguru>=0.7",
+    "opentelemetry-api>=1.28",
+    "opentelemetry-sdk>=1.28",
+]
+
+[project.urls]
+Repository = "https://github.com/mikeZ98/jobhunter-agent"
+
+[project.optional-dependencies]
+otlp = ["opentelemetry-exporter-otlp-proto-http>=1.28"]
+linkedin = ["linkedin-api>=2.3"]
+typst = ["typst>=0.12"]
+all = ["jobhunter-agent[otlp,linkedin,typst]"]
+
+[project.scripts]
+jobhunter = "jobhunter.cli:app"
+
+[dependency-groups]
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.8", "mypy>=1.13"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/jobhunter"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC", "SIM", "RUF"]
+ignore = [
+    "RUF001", "RUF002", "RUF003",  # Polish diacritics in strings/comments are intentional
+    "E501",                        # ruff format owns wrapping; long lines left are embedded JS/regex literals
+    "ASYNC240",                    # tiny local file writes in async nodes are fine
+]
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+ignore_missing_imports = true
