@@ -100,7 +100,7 @@ def test_board_stats_accepts_collector_counters():
 
 def test_prepare_emits_exactly_one_item(job):
     item = DigestItem(scored=ScoredListing(listing=job))
-    assert PrepareOutput(items=[item]).update() == {"items": [item], "errors": []}
+    assert PrepareOutput(items=[item]).update() == {"items": [item], "errors": [], "quarantined": []}
     with pytest.raises(ValidationError):
         PrepareOutput(items=[])
     with pytest.raises(ValidationError):

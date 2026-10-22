@@ -10,6 +10,7 @@ import pytest
 
 from jobhunter import graph as graph_mod
 from jobhunter.agents.assets import CoverLetter, TailoredCV
+from jobhunter.agents.critic import CriticVerdict
 from jobhunter.agents.interview import InterviewIntel
 from jobhunter.graph import Deps, build_daily_graph, load_profile
 from jobhunter.llm.embeddings import _hashed_bow
@@ -51,6 +52,7 @@ class FakeLLM:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.broken: set[str] = set()  # response models that fail, like an out-of-memory Ollama
+        self.lie = False  # cover letters claim a latency the profile never states
 
     async def release(self) -> None:
         pass
@@ -68,6 +70,8 @@ class FakeLLM:
                 f"W {company} rozwijacie usługi na FastAPI — w DocuMind obniżyłem p95 z 9,1 s do 2,4 s "
                 "dzięki hybrydowemu wyszukiwaniu i streamingowi odpowiedzi. "
             ) * 7
+            if self.lie:
+                p = p.replace("2,4 s", "0,8 s")
             return CoverLetter.model_validate(
                 {
                     "subject": "s",
@@ -90,6 +94,9 @@ class FakeLLM:
                 },
                 context=ctx,
             )
+        if response_model is CriticVerdict:  # approve: clear every suspect, report nothing
+            terms = [{"term": t, "claims_experience": False} for t in ctx.get("suspect_terms", [])]
+            return CriticVerdict.model_validate({"terms": terms}, context=ctx)
         if response_model is InterviewIntel:
             q = {
                 "question": "Jak ewaluować RAG?",
@@ -187,3 +194,28 @@ async def test_failed_prepare_is_retried_without_scraping(settings, db, monkeypa
     assert "MatchAssessment" not in llm.calls
     assert len(db.by_status(ListingStatus.PREPARED)) == 3
     assert db.failed_prepares() == []
+
+
+@pytest.mark.asyncio
+async def test_critic_quarantines_untruthful_letters(settings, db, monkeypatch):
+    monkeypatch.setattr(graph_mod, "build_scrapers", lambda infra, boards: [FakeBoard(settings.search)])
+    monkeypatch.setattr(graph_mod, "refresh_fx_rates", lambda: None)
+    settings.scoring.min_daily, settings.scoring.min_score = 1, 0
+    profile, base_cv = load_profile(settings)
+    llm = FakeLLM()
+    llm.lie = True
+    deps = Deps(settings, db, llm, FakeEmbedder(), profile, base_cv, browser=None, notes=None)  # type: ignore[arg-type]
+    run_date = date.today().isoformat()
+    out = await build_daily_graph(deps).ainvoke({"run_date": run_date, "boards": None})
+
+    assert len(out["quarantined"]) == 3 and all(q.endswith(": cover letter") for q in out["quarantined"])
+    assert llm.calls.count("CoverLetter") == 6  # one rewrite each (max_revisions = 1), then held
+    for it in out["items"]:
+        d = settings.output_dir / run_date / it.output_dir.rsplit("/", 1)[-1]
+        assert not (d / "cover_letter.md").exists()  # fail closed: never written as an asset
+        assert "0,8 s" in (d / "quarantine" / "cover_letter.md").read_text()
+        assert '"approved": false' in (d / "quarantine" / "cover_letter.critic.json").read_text()
+        assert (d / "cv.md").exists()  # the truthful CV is still delivered
+        assert "quarantined by critic" in (it.error or "")
+    assert db.by_status(ListingStatus.PREPARED) == []
+    assert db.failed_prepares() == []  # held for a human, not regenerated on every run
