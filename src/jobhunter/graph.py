@@ -43,6 +43,16 @@ from jobhunter.salary import refresh_fx_rates
 from jobhunter.scrapers import ScrapeInfra, build_scrapers
 from jobhunter.scrapers.browser import BrowserManager
 from jobhunter.telemetry import get_logger, traced_node
+from jobhunter.workflow.schemas import (
+    AutofillOutput,
+    BoardStats,
+    CollectOutput,
+    InboxOutput,
+    NormalizeOutput,
+    PrepareOutput,
+    PublishOutput,
+    ScoreOutput,
+)
 
 log = get_logger("graph")
 
@@ -105,7 +115,7 @@ def build_daily_graph(deps: Deps) -> DailyGraph:
     async def collect(state: PipelineState) -> dict[str, Any]:
         if state.get("skip_collect"):
             log.info("collect: skipped (--skip-collect)")
-            return {"listings": []}
+            return CollectOutput(listings=[]).update()
         await asyncio.to_thread(refresh_fx_rates)
         infra = ScrapeInfra.create(s, deps.browser, on_antibot=deps.db.log_antibot)
         scrapers = build_scrapers(infra, state.get("boards"))
@@ -117,7 +127,11 @@ def build_daily_graph(deps: Deps) -> DailyGraph:
         )
         log.info("collect: {} listings from {} boards", len(listings), len(scrapers))
         errors = [f"{b}: {st['error']}" for b, st in stats.items() if st.get("error")]
-        return {"listings": listings, "board_stats": stats, "errors": errors}
+        return CollectOutput(
+            listings=listings,
+            board_stats={b: BoardStats.model_validate(st) for b, st in stats.items()},
+            errors=errors,
+        ).update()
 
     @traced_node("normalize")
     async def normalize(state: PipelineState) -> dict[str, Any]:
@@ -141,7 +155,7 @@ def build_daily_graph(deps: Deps) -> DailyGraph:
         deps.db.upsert_listings(jobs)
         deps.db.save_scores(ScoredListing(listing=j, rejected_reason=r) for j, r in dropped)
         log.info("normalize: {} kept, {} rejected by prefilter", len(kept), len(dropped))
-        return {"listings": kept}
+        return NormalizeOutput(listings=kept).update()
 
     @traced_node("score")
     async def score(state: PipelineState) -> dict[str, Any]:
@@ -175,7 +189,7 @@ def build_daily_graph(deps: Deps) -> DailyGraph:
             len(shortlist),
             deps.embedder.backend,
         )
-        return {"scored": scored, "shortlist": shortlist}
+        return ScoreOutput(scored=scored, shortlist=shortlist).update()
 
     def fan_out(state: PipelineState) -> list[Send] | str:
         shortlist = state.get("shortlist") or []
@@ -249,22 +263,22 @@ def build_daily_graph(deps: Deps) -> DailyGraph:
                 log.debug("status unchanged for {}: {}", job.source_key, e)
         item = DigestItem(scored=sl, intel=intel, output_dir=str(out_dir), error="; ".join(errors) or None)
         log.info("prepare #{}: done{}", inp["rank"], f" with errors: {item.error}" if item.error else "")
-        return {"items": [item], "errors": [f"{job.company}: {e}" for e in errors]}
+        return PrepareOutput(items=[item], errors=[f"{job.company}: {e}" for e in errors]).update()
 
     @traced_node("inbox")
     async def inbox(state: PipelineState) -> dict[str, Any]:
         if not state.get("with_inbox"):
-            return {"inbox": []}
+            return InboxOutput().update()
         if not (s.linkedin_li_at and s.linkedin_jsessionid):
             log.info("inbox: skipped — set LINKEDIN_LI_AT and LINKEDIN_JSESSIONID in .env to enable")
-            return {"inbox": []}
+            return InboxOutput().update()
         try:
             msgs = await asyncio.to_thread(fetch_inbox, s)
             drafts = await draft_replies(msgs, deps.profile, deps.llm, deps.db, s.llm.max_concurrency)
-            return {"inbox": drafts}
+            return InboxOutput(inbox=drafts).update()
         except Exception as e:
             log.warning("inbox skipped: {!r}", e)
-            return {"inbox": [], "errors": [f"linkedin inbox: {e}"]}
+            return InboxOutput(errors=[f"linkedin inbox: {e}"]).update()
 
     @traced_node("publish")
     async def publish(state: PipelineState) -> dict[str, Any]:
@@ -288,8 +302,8 @@ def build_daily_graph(deps: Deps) -> DailyGraph:
             except Exception as e:  # the digest is on disk; never lose the run at the last step
                 msg = str(e) if isinstance(e, AppleNotesError) else repr(e)
                 log.error("Apple Notes failed: {}", msg)
-                return {"note_id": None, "errors": [f"apple notes: {msg}"]}
-        return {"note_id": note_id}
+                return PublishOutput(errors=[f"apple notes: {msg}"]).update()
+        return PublishOutput(note_id=note_id).update()
 
     def after_publish(state: PipelineState) -> str:
         return "autofill" if state.get("apply") else END
@@ -297,11 +311,10 @@ def build_daily_graph(deps: Deps) -> DailyGraph:
     @traced_node("autofill")
     async def autofill(state: PipelineState) -> dict[str, Any]:
         rows = deps.db.by_status(ListingStatus.PREPARED, limit=s.scoring.max_daily)
-        if not rows:
-            return {}
-        async with deps.browser.persistent_profile() as ctx:
-            await review_loop(ctx, deps.db, deps.profile, deps.llm, rows)
-        return {}
+        if rows:
+            async with deps.browser.persistent_profile() as ctx:
+                await review_loop(ctx, deps.db, deps.profile, deps.llm, rows)
+        return AutofillOutput().update()
 
     g = StateGraph(PipelineState)
     g.add_node("collect", collect)

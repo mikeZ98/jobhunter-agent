@@ -10,7 +10,7 @@ import shutil
 import sqlite3
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 import typer
 from rich.console import Console
@@ -22,7 +22,7 @@ from jobhunter.models import ListingStatus
 from jobhunter.telemetry import setup_telemetry
 
 if TYPE_CHECKING:
-    from jobhunter.graph import Deps
+    from jobhunter.graph import Deps, PipelineState
 
 app = typer.Typer(
     no_args_is_help=True, add_completion=False, help="JobHunter-Agent — HITL job search pipeline."
@@ -81,6 +81,22 @@ def run(
     ] = False,
 ) -> None:
     """Daily pipeline: scrape → normalize → score → prepare assets → digest (→ autofill)."""
+    from pydantic import ValidationError
+
+    from jobhunter.workflow.schemas import RunRequest
+
+    try:  # before _boot(): a typo in --board must not cost a browser launch
+        request = RunRequest.model_validate(
+            {
+                "run_date": date.today(),
+                "boards": boards,
+                "skip_collect": skip_collect,
+                "with_inbox": inbox,
+                "apply": apply,
+            }
+        )
+    except ValidationError as e:
+        raise typer.BadParameter(e.errors()[0]["msg"], param_hint="--board") from None
     s, db = _boot()
     s.notes.enabled = notes
 
@@ -100,13 +116,7 @@ def run(
                     raise typer.Exit(1)
             graph = build_daily_graph(deps)
             result: dict[str, Any] = await graph.ainvoke(
-                {
-                    "run_date": date.today().isoformat(),
-                    "boards": boards,
-                    "skip_collect": skip_collect,
-                    "with_inbox": inbox,
-                    "apply": apply,
-                },
+                cast("PipelineState", request.to_state()),
                 config={"recursion_limit": 50, "run_name": "jobhunter-daily"},
             )
         finally:
