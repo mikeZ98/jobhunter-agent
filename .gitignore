@@ -22,6 +22,8 @@ logs/
 *.sqlite3
 
 # ── python / tooling caches ────────────────────────────────────────────
+# project-local caches pinned by .envrc (uv, pip, ruff, mypy, Playwright browsers, TMPDIR)
+.cache/
 __pycache__/
 *.py[cod]
 .venv/
