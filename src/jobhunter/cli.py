@@ -365,6 +365,7 @@ def doctor() -> None:
         console.print("[green]✓[/green] local_only = true — cloud models disabled (API keys ignored)")
     else:
         console.print(
+            f"{ok(bool(s.openrouter_api_key))} OPENROUTER_API_KEY   "
             f"{ok(bool(s.anthropic_api_key))} ANTHROPIC_API_KEY   {ok(bool(s.openai_api_key))} OPENAI_API_KEY"
         )
     console.print(f"   free memory for local models: {router.probe.free_memory_gb():.1f} GB")

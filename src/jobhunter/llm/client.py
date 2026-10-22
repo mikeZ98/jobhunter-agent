@@ -3,7 +3,13 @@
 ``instructor`` re-asks the model with the validation error on schema/validator failures
 (``max_retries``), so a Pydantic ``field_validator`` doubles as a *guardrail* (e.g. "CV may only
 mention skills present in profile.json"). When retries are exhausted we fall through to the next
-model in the decision matrix — usually a bigger local model, then the cloud.
+model in the decision matrix — usually a bigger local model, then the cloud (if opted in).
+
+Every failure is classified (``llm.errors``) and fed back into routing: a 429 cools the whole
+provider down for Retry-After seconds, a rejected key disables it for the run, a refused local
+connection forces an Ollama re-probe. When the only models left are rate-limited, the call waits for
+the cooldown once (``rate_limit_max_wait_s``) instead of failing. The error kind is recorded in
+``llm_calls.error`` and the ``llm.failures`` counter.
 
 Local calls go through a client-side gate (``ollama_parallel``, default 1) and keep one chat model
 resident (``ollama_single_model``): on a 16 GB Mac, two or three 4-8B models at 12k context exhaust
@@ -20,12 +26,12 @@ from typing import Any, TypeVar
 
 import httpx
 import instructor
-from instructor.core import InstructorRetryException
 from pydantic import BaseModel
 
 from jobhunter.config import Settings
+from jobhunter.llm.errors import ErrorKind, LLMFailure, classify
 from jobhunter.llm.router import ModelRouter, ModelSpec, NoModelAvailable, Provider, Task, ollama_alias
-from jobhunter.telemetry import get_logger, llm_latency, parse_failures, span, tokens_counter
+from jobhunter.telemetry import get_logger, llm_failures, llm_latency, parse_failures, span, tokens_counter
 
 log = get_logger("llm")
 T = TypeVar("T", bound=BaseModel)
@@ -66,8 +72,26 @@ class LLMClient:
                 base = f"{cfg.ollama_base_url}/v1" if provider == Provider.OLLAMA else cfg.vllm_base_url
                 # JSON mode is the most reliable structured mode for 7-24B local models; Ollama additionally
                 # constrains decoding to valid JSON so we only ever retry on *semantic* validation errors.
+                # No SDK-level retries: re-sending a request that timed out after request_timeout_s to the
+                # same laptop model just triples the wait — the router moves on to the next model instead.
                 client = instructor.from_openai(
-                    AsyncOpenAI(base_url=base, api_key=provider.value, timeout=cfg.request_timeout_s),
+                    AsyncOpenAI(
+                        base_url=base, api_key=provider.value, timeout=cfg.request_timeout_s, max_retries=0
+                    ),
+                    mode=instructor.Mode.JSON,
+                )
+            case Provider.OPENROUTER:
+                from openai import AsyncOpenAI
+
+                key = self.settings.openrouter_api_key
+                client = instructor.from_openai(
+                    AsyncOpenAI(
+                        base_url=cfg.openrouter_base_url,
+                        api_key=key.get_secret_value() if key else None,
+                        timeout=cfg.request_timeout_s,
+                        default_headers={"X-Title": "jobhunter-agent"},
+                    ),
+                    # Open-weight models behind several hosts: JSON mode works everywhere, tool calling doesn't.
                     mode=instructor.Mode.JSON,
                 )
             case Provider.ANTHROPIC:
@@ -173,22 +197,42 @@ class LLMClient:
     ) -> T:
         prompt = system + user
         tried: set[str] = set()
+        rate_limited: set[str] = set()
+        failures: list[str] = []
         last_err: Exception | None = None
         empty_retried: set[str] = set()
+        waited = False
         while True:
             try:
                 candidates = await asyncio.to_thread(self.router.candidates, task, prompt, max_tokens, tried)
             except NoModelAvailable as e:
-                raise NoModelAvailable(f"{e}; last error: {last_err!r}") from last_err
+                wait = self.router.shortest_cooldown()
+                if (
+                    rate_limited
+                    and not waited
+                    and wait is not None
+                    and wait <= self.settings.llm.rate_limit_max_wait_s
+                ):
+                    waited = True
+                    log.info(
+                        "{}: only rate-limited models left — waiting {:.0f}s for the cooldown", task, wait
+                    )
+                    await asyncio.sleep(wait)
+                    tried -= rate_limited
+                    continue
+                summary = "; ".join(failures) or "none"
+                raise NoModelAvailable(f"{e}; failures: {summary}; last error: {last_err!r}") from last_err
             spec = candidates[0].model
             tried.add(spec.key)
             try:
                 return await self._call(
                     spec, task, response_model, system, user, max_tokens, temperature, validation_context
                 )
-            except InstructorRetryException as e:
+            except Exception as e:
                 last_err = e
-                if spec.provider == Provider.OLLAMA and _empty_reply(e):
+                failure = classify(e)
+                failures.append(f"{spec.key}: {failure.kind}")
+                if failure.kind is ErrorKind.EMPTY_REPLY and spec.provider == Provider.OLLAMA:
                     if spec.key not in empty_retried:
                         empty_retried.add(spec.key)
                         tried.discard(spec.key)
@@ -205,10 +249,51 @@ class LLMClient:
                         continue
                     log.warning("{} keeps returning empty replies for {}", spec.key, task)
                     continue
+                if failure.kind is ErrorKind.RATE_LIMIT:
+                    rate_limited.add(spec.key)
+                self._on_failure(spec, task, failure, e)
+
+    def _on_failure(self, spec: ModelSpec, task: Task, f: LLMFailure, e: Exception) -> None:
+        """Feed a classified failure back into routing; the caller then tries the next candidate."""
+        cfg = self.settings.llm
+        match f.kind:
+            case ErrorKind.RATE_LIMIT:
+                secs = cfg.rate_limit_cooldown_s if f.retry_after is None else f.retry_after
+                self.router.cooldown(spec.provider, secs, "rate-limited")
+                log.warning(
+                    "{} rate-limited on {} — skipping {} for {:.0f}s", spec.key, task, spec.provider, secs
+                )
+            case ErrorKind.AUTH:
+                self.router.disable(spec.provider, f"HTTP {f.status}: check the API key / credits")
+                log.error(
+                    "{} rejected the request (HTTP {}) — {} disabled for this run",
+                    spec.key,
+                    f.status,
+                    spec.provider,
+                )
+            case ErrorKind.CONNECTION if spec.local:
+                self.router.probe.invalidate()
+                log.warning("{} unreachable for {} — re-probing local backends: {!r}", spec.key, task, e)
+            case ErrorKind.CONNECTION:
+                self.router.cooldown(spec.provider, cfg.connection_cooldown_s, "unreachable")
+                log.warning(
+                    "{} unreachable for {} — skipping {} for {:.0f}s",
+                    spec.key,
+                    task,
+                    spec.provider,
+                    cfg.connection_cooldown_s,
+                )
+            case ErrorKind.TIMEOUT:
+                log.warning(
+                    "{} timed out on {} (request_timeout_s={:.0f}) — next model",
+                    spec.key,
+                    task,
+                    cfg.request_timeout_s,
+                )
+            case ErrorKind.VALIDATION | ErrorKind.EMPTY_REPLY:
                 log.warning("{} exhausted validation retries for {}: {}", spec.key, task, str(e)[:300])
-            except Exception as e:
-                last_err = e
-                log.warning("{} failed for {}: {!r}", spec.key, task, e)
+            case _:
+                log.warning("{} failed for {} ({}): {!r}", spec.key, task, f.kind, e)
 
     async def _call(
         self,
@@ -243,6 +328,8 @@ class LLMClient:
                 self._loaded = kwargs["model"]
                 local: T = await self._create(client, spec, task, kwargs)
                 return local
+        if spec.provider == Provider.OPENROUTER and self.settings.llm.openrouter_deny_data_collection:
+            kwargs["extra_body"] = {"provider": {"data_collection": "deny"}}
         remote: T = await self._create(client, spec, task, kwargs)
         return remote
 
@@ -252,7 +339,9 @@ class LLMClient:
         _parse_errors.set(0)
         t0 = time.perf_counter()
         ok, retries = False, 0
+        error: ErrorKind | None = None
         usage: tuple[int | None, int | None] = (None, None)
+        attrs = {"task": task.value, "model": spec.name, "provider": spec.provider.value}
         with span("llm.call", task=task.value, provider=spec.provider.value, model=spec.name) as s:
             try:
                 obj, completion = await client.chat.completions.create_with_completion(**kwargs)
@@ -261,10 +350,14 @@ class LLMClient:
                 s.set_attribute("llm.prompt_tokens", usage[0] or 0)
                 s.set_attribute("llm.completion_tokens", usage[1] or 0)
                 return obj
+            except Exception as e:
+                error = classify(e).kind
+                s.set_attribute("llm.error_kind", error.value)
+                llm_failures.add(1, {**attrs, "kind": error.value})
+                raise
             finally:
                 retries = _parse_errors.get()
                 ms = (time.perf_counter() - t0) * 1000
-                attrs = {"task": task.value, "model": spec.name, "provider": spec.provider.value}
                 llm_latency.record(ms, attrs)
                 if usage[0]:
                     tokens_counter.add(usage[0], {**attrs, "kind": "prompt"})
@@ -281,17 +374,8 @@ class LLMClient:
                         latency_ms=ms,
                         success=ok,
                         retries=retries,
+                        error=error.value if error else None,
                     )
-
-
-def _empty_reply(e: InstructorRetryException) -> bool:
-    """Ollama answers HTTP 200 with no content when llama-server hits a compute error (e.g. Metal OOM)."""
-    c = e.last_completion
-    try:
-        content = c.choices[0].message.content  # type: ignore[union-attr]
-    except (AttributeError, IndexError, TypeError):
-        return "line 1 column 0" in str(e) and "input_value=''" in str(e)
-    return not (content or "").strip()
 
 
 def _usage(completion: Any) -> tuple[int | None, int | None]:
