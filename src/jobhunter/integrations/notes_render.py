@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 from html import escape
+from typing import Any
 
 from jobhunter.agents.interview import InterviewIntel
 from jobhunter.agents.linkedin_messaging import InboxMessage, RecruiterTriage
@@ -27,7 +28,7 @@ class DigestItem:
 class Digest:
     day: date
     items: list[DigestItem]
-    board_stats: dict[str, dict] = field(default_factory=dict)
+    board_stats: dict[str, dict[str, Any]] = field(default_factory=dict)
     inbox: list[tuple[InboxMessage, RecruiterTriage]] = field(default_factory=list)
 
     @property

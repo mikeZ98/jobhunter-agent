@@ -30,7 +30,8 @@ def _hashed_bow(texts: list[str], dim: int = 2048) -> np.ndarray:
 def cosine(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     a = a / (np.linalg.norm(a, axis=-1, keepdims=True) + 1e-9)
     b = b / (np.linalg.norm(b, axis=-1, keepdims=True) + 1e-9)
-    return a @ b.T
+    sim: np.ndarray = a @ b.T
+    return sim
 
 
 class Embedder:

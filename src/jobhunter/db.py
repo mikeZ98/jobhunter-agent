@@ -231,7 +231,10 @@ class Database:
         )
 
     def get(self, source_key: str) -> sqlite3.Row | None:
-        return self._conn.execute("SELECT * FROM listings WHERE source_key=?", (source_key,)).fetchone()
+        row: sqlite3.Row | None = self._conn.execute(
+            "SELECT * FROM listings WHERE source_key=?", (source_key,)
+        ).fetchone()
+        return row
 
     def by_status(self, status: ListingStatus, limit: int = 100) -> list[sqlite3.Row]:
         return self._conn.execute(

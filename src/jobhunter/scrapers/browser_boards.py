@@ -321,7 +321,7 @@ class PracujScraper(BrowserScraper):
         return out
 
     async def _from_dom(self, page: Page) -> list[dict[str, Any]]:
-        return await page.eval_on_selector_all(
+        rows: list[dict[str, Any]] = await page.eval_on_selector_all(
             "[data-test='default-offer'], [data-test='positioned-offer']",
             """els => els.map(e => {
                 const q = s => e.querySelector(s)?.innerText?.trim() || '';
@@ -333,6 +333,7 @@ class PracujScraper(BrowserScraper):
                          contracts: [], work_modes: [q("[data-test='offer-additional-info-0']")], levels: [] };
             }).filter(o => o.url && o.title)""",
         )
+        return rows
 
     async def enrich(self, raw: RawListing) -> RawListing:
         page = await self.goto(raw.url)

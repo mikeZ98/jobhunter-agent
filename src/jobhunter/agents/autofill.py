@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from playwright.async_api import BrowserContext, Frame, Page
+from playwright.async_api import BrowserContext, Frame, Locator, Page
 from playwright.async_api import Error as PlaywrightError
 from pydantic import BaseModel, Field, ValidationInfo, field_validator
 from rich.console import Console
@@ -329,7 +329,7 @@ async def scan(page: Page) -> list[FieldDesc]:
     return fields
 
 
-async def _locator(f: FieldDesc):
+async def _locator(f: FieldDesc) -> Locator:
     assert f.frame is not None
     return f.frame.locator(f'[data-jh-id="{f.id}"]').first
 
