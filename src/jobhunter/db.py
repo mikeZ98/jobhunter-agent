@@ -176,7 +176,10 @@ class Database:
         since = (datetime.now(UTC) - timedelta(days=days)).isoformat(timespec="seconds")
         rows = self._conn.execute(
             "SELECT scored_json FROM listings WHERE status=? AND scored_json IS NOT NULL"
-            " AND assets_json IS NOT NULL AND assets_json NOT LIKE '%cover_letter_md%'"
+            # Match the JSON *keys*, with "_" escaped: as a LIKE wildcard it also matched the path
+            # ".../quarantine/cover_letter.md", hiding unverified drafts from the retry queue.
+            " AND assets_json IS NOT NULL"
+            " AND assets_json NOT LIKE '%\"cover\\_letter\\_md\"%' ESCAPE '\\'"
             " AND assets_json NOT LIKE '%\"quarantined\"%'"
             " AND last_seen_at >= ? ORDER BY final_score DESC LIMIT ?",
             (ListingStatus.SCRAPED.value, since, limit),
