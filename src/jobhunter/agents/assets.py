@@ -334,7 +334,7 @@ async def write_cv_files(cv: TailoredCV, profile: CandidateProfile, out_dir: Pat
 
 def _compile_typst(src: Path, dst: Path) -> bool:
     try:
-        import typst  # type: ignore[import-not-found]
+        import typst
 
         typst.compile(str(src), output=str(dst))
         return True

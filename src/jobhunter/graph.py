@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Send
 
 from jobhunter.agents import assets as assets_agent
@@ -94,7 +95,10 @@ class Deps:
 # ------------------------------------------------------------------ graph
 
 
-def build_daily_graph(deps: Deps):
+DailyGraph = CompiledStateGraph[PipelineState, None, PipelineState, PipelineState]
+
+
+def build_daily_graph(deps: Deps) -> DailyGraph:
     s = deps.settings
 
     @traced_node("collect")

@@ -5,19 +5,24 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import shutil
+import sqlite3
 from datetime import date
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 import typer
 from rich.console import Console
 from rich.table import Table
 
-from jobhunter.config import ROOT, get_settings
+from jobhunter.config import ROOT, Settings, get_settings
 from jobhunter.db import Database
 from jobhunter.models import ListingStatus
 from jobhunter.telemetry import setup_telemetry
+
+if TYPE_CHECKING:
+    from jobhunter.graph import Deps
 
 app = typer.Typer(
     no_args_is_help=True, add_completion=False, help="JobHunter-Agent — HITL job search pipeline."
@@ -26,13 +31,13 @@ console = Console()
 EXAMPLES = Path(__file__).parent / "examples"
 
 
-def _boot() -> tuple:
+def _boot() -> tuple[Settings, Database]:
     s = get_settings()
     setup_telemetry(s.log_level, s.otel_endpoint, ROOT / "logs")
     return s, Database(s.db_path)
 
 
-async def _deps(s, db):
+async def _deps(s: Settings, db: Database) -> Deps:
     from jobhunter.graph import Deps, load_profile
     from jobhunter.integrations.apple_notes import AppleNotes
     from jobhunter.llm import Embedder, LLMClient
@@ -79,7 +84,7 @@ def run(
     s, db = _boot()
     s.notes.enabled = notes
 
-    async def main() -> dict:
+    async def main() -> dict[str, Any]:
         from jobhunter.graph import build_daily_graph
 
         deps = await _deps(s, db)
@@ -94,7 +99,7 @@ def run(
                     )
                     raise typer.Exit(1)
             graph = build_daily_graph(deps)
-            return await graph.ainvoke(
+            result: dict[str, Any] = await graph.ainvoke(
                 {
                     "run_date": date.today().isoformat(),
                     "boards": boards,
@@ -107,6 +112,7 @@ def run(
         finally:
             with contextlib.suppress(Exception):  # driver may already be gone after Ctrl-C
                 await deps.browser.__aexit__(None, None, None)
+        return result
 
     try:
         result = asyncio.run(main())
@@ -119,7 +125,7 @@ def run(
     _print_digest(result)
 
 
-def _print_digest(result: dict) -> None:
+def _print_digest(result: dict[str, Any]) -> None:
     t = Table(title=f"Daily digest — {len(result.get('items', []))} prepared")
     for col in ("Score", "Role", "Company", "Salary (B2B eq.)", "Board", "Files"):
         t.add_column(col, overflow="fold")
@@ -331,7 +337,10 @@ def doctor() -> None:
 
     router = ModelRouter(s)
     router.probe.refresh(force=True)
-    ok = lambda b: "[green]✓[/green]" if b else "[red]✗[/red]"  # noqa: E731
+
+    def ok(passed: bool) -> str:
+        return "[green]✓[/green]" if passed else "[red]✗[/red]"
+
     console.print(f"{ok(router.probe._ollama_up)} Ollama at {s.llm.ollama_base_url}")
     seen = set()
     for models in router.matrix.values():
@@ -355,7 +364,10 @@ def doctor() -> None:
             console.print(f"   route {task.value:<12} → {d.model.key}")
         except Exception as e:
             console.print(f"   route {task.value:<12} → [red]{e}[/red]")
-    chromium = Path.home() / "Library/Caches/ms-playwright"
+    # Honours PLAYWRIGHT_BROWSERS_PATH (pinned to the project's .cache/ by .envrc), like Playwright does.
+    chromium = Path(
+        os.environ.get("PLAYWRIGHT_BROWSERS_PATH") or Path.home() / "Library/Caches/ms-playwright"
+    )
     console.print(f"{ok(chromium.exists())} Playwright browsers (`uv run playwright install chromium`)")
     console.print(f"{ok(AppleNotes.available())} osascript / Apple Notes")
     try:
@@ -371,8 +383,10 @@ def doctor() -> None:
     console.print(f"{ok(bool(s.linkedin_li_at))} LinkedIn cookies (optional, for `inbox`)")
 
 
-def _find(db: Database, key: str):
-    rows = db._conn.execute("SELECT * FROM listings WHERE source_key LIKE ? LIMIT 2", (key + "%",)).fetchall()
+def _find(db: Database, key: str) -> sqlite3.Row:
+    rows: list[sqlite3.Row] = db._conn.execute(
+        "SELECT * FROM listings WHERE source_key LIKE ? LIMIT 2", (key + "%",)
+    ).fetchall()
     if len(rows) != 1:
         raise typer.BadParameter(f"{'no' if not rows else 'ambiguous'} listing for key {key!r}")
     return rows[0]

@@ -70,7 +70,7 @@ async def apply_stealth(target: Page | BrowserContext, profile: FingerprintProfi
     try:
         from playwright_stealth import Stealth
     except ImportError:  # playwright-stealth < 2.0
-        from playwright_stealth import stealth_async  # type: ignore[attr-defined]
+        from playwright_stealth import stealth_async
 
         for p in target.pages if isinstance(target, BrowserContext) else [target]:
             await stealth_async(p)

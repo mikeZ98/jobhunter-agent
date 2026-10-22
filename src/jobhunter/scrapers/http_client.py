@@ -55,13 +55,13 @@ class StealthHttpClient:
         # Same "device" for a whole ISO week: returning-visitor cookies stay coherent with the fingerprint.
         self.profile = pick_profile(seed=f"{board}:{date.today().isocalendar()[:2]}")
         self.cookie_file = cookies_dir / f"{board}.json"
-        self._session: AsyncSession | None = None
+        self._session: AsyncSession[Response] | None = None
 
     async def __aenter__(self) -> StealthHttpClient:
         # The UA we send is the one baked into the profile, i.e. the same browser build that the TLS
         # ClientHello / HTTP2 SETTINGS impersonate — the two must never disagree.
         self._session = AsyncSession(
-            impersonate=self.profile.impersonate,  # type: ignore[arg-type]
+            impersonate=self.profile.impersonate,
             headers={"User-Agent": self.profile.user_agent},
             timeout=30,
         )
@@ -142,7 +142,8 @@ class StealthHttpClient:
                     continue
                 s.set_attribute("http.status_code", resp.status_code)
 
-            kind = detect_challenge(resp.status_code, dict(resp.headers), resp.text[:20000])
+            headers = {k: v for k, v in resp.headers.items() if v is not None}
+            kind = detect_challenge(resp.status_code, headers, resp.text[:20000])
             if kind is None and resp.status_code < 500:
                 return resp
 

@@ -242,7 +242,7 @@ class ResourceProbe:
                 return max(int(x) for x in out.split()) / 1024
             except (subprocess.SubprocessError, ValueError):
                 pass
-        return psutil.virtual_memory().available / 1024**3
+        return float(psutil.virtual_memory().available) / 1024**3
 
     def installed(self, m: ModelSpec) -> bool:
         if m.provider == Provider.VLLM:

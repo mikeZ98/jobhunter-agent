@@ -14,10 +14,10 @@ import functools
 import inspect
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 from loguru import logger
 from opentelemetry import metrics, trace
@@ -25,6 +25,10 @@ from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.trace import Span
+
+if TYPE_CHECKING:
+    from loguru import Logger
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -71,12 +75,12 @@ def setup_telemetry(
     metrics.set_meter_provider(MeterProvider(resource=resource, metric_readers=readers))
 
 
-def get_logger(component: str):
+def get_logger(component: str) -> Logger:
     return logger.bind(component=component)
 
 
 @contextmanager
-def span(name: str, **attrs: Any):
+def span(name: str, **attrs: Any) -> Iterator[Span]:
     with _tracer.start_as_current_span(name) as s:
         for k, v in attrs.items():
             if v is not None:
@@ -97,7 +101,7 @@ def traced_node(name: str) -> Callable[[Callable[P, R]], Callable[P, R]]:
                 t0 = time.perf_counter()
                 with span(f"node.{name}"):
                     try:
-                        result = await fn(*args, **kwargs)  # type: ignore[misc]
+                        result: R = await fn(*args, **kwargs)
                     except Exception:
                         log.exception("node failed")
                         raise

@@ -74,4 +74,12 @@ ignore = [
 [tool.mypy]
 python_version = "3.12"
 plugins = ["pydantic.mypy"]
+strict = true
 ignore_missing_imports = true
+# curl_cffi ships inline types but leaves Response.json/raise_for_status unannotated.
+untyped_calls_exclude = ["curl_cffi"]
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true

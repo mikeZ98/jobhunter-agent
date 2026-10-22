@@ -241,8 +241,10 @@ class LLMClient:
                 if self.settings.llm.ollama_single_model and self._loaded != kwargs["model"]:
                     await self._unload_others(kwargs["model"])
                 self._loaded = kwargs["model"]
-                return await self._create(client, spec, task, kwargs)
-        return await self._create(client, spec, task, kwargs)
+                local: T = await self._create(client, spec, task, kwargs)
+                return local
+        remote: T = await self._create(client, spec, task, kwargs)
+        return remote
 
     async def _create(
         self, client: instructor.AsyncInstructor, spec: ModelSpec, task: Task, kwargs: dict[str, Any]
