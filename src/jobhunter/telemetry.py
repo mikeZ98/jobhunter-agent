@@ -39,6 +39,7 @@ _meter = metrics.get_meter("jobhunter")
 tokens_counter = _meter.create_counter("llm.tokens", unit="token")
 llm_latency = _meter.create_histogram("llm.latency", unit="ms")
 parse_failures = _meter.create_counter("llm.parse_failures")
+llm_failures = _meter.create_counter("llm.failures")  # attrs: provider, model, task, kind
 antibot_counter = _meter.create_counter("scraper.antibot_events")
 node_latency = _meter.create_histogram("agent.node.latency", unit="ms")
 

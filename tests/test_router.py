@@ -39,7 +39,7 @@ def test_low_memory_falls_back_to_smaller_local_then_cloud(router, monkeypatch):
     router.settings.anthropic_api_key = SecretStr("sk-test")
     d = router.route(Task.INTERVIEW, "prompt")
     assert d.model.provider == "anthropic"
-    assert all("GB" in r or "not installed" in r for _, r in d.skipped)
+    assert all("GB" in r or "not installed" in r or "API_KEY not set" in r for _, r in d.skipped)
 
 
 def test_local_only_low_memory_still_tries_smallest_local(router, monkeypatch):
@@ -61,6 +61,7 @@ def test_nothing_available_raises_with_reasons(router):
     router.probe._ollama_up = False
     router.settings.anthropic_api_key = None
     router.settings.openai_api_key = None
+    router.settings.openrouter_api_key = None
     with pytest.raises(NoModelAvailable, match="ollama not reachable"):
         router.route(Task.SCORE, "prompt")
 
@@ -91,6 +92,7 @@ def test_unknown_tag_gets_context_and_memory_from_ollama_metadata(router):
 def test_ollama_context_is_capped_to_num_ctx(router):
     router.settings.llm.ollama_num_ctx = 12_288
     router.settings.anthropic_api_key = router.settings.openai_api_key = None  # shell may export real keys
+    router.settings.openrouter_api_key = None
     assert router.route(Task.EXTRACT, "x" * 30_000, 1000).model.context_window == 12_288  # ~9.6k tokens fits
     with pytest.raises(NoModelAvailable, match="context"):
         router.route(Task.EXTRACT, "x" * 60_000, 1000)  # ~18k tokens: would be truncated -> refuse
@@ -144,3 +146,68 @@ def test_unloading_the_resident_model_counts_as_free_memory(router, monkeypatch)
     assert c[0].model.name == LLAMA and c[0].skipped[-1][1].startswith("needs 10.5 GB")
     router.settings.llm.ollama_single_model = False  # nothing gets unloaded -> llama doesn't fit either
     assert router.candidates(Task.INTERVIEW, "prompt", 500)[0].skipped[-1][1] == "memory tight — may swap"
+
+
+# ------------------------------------------------------------------ cloud tiers & provider health
+
+
+def _keys(router, **keys):
+    for name in ("openrouter", "anthropic", "openai"):
+        setattr(router.settings, f"{name}_api_key", SecretStr(keys[name]) if name in keys else None)
+
+
+def test_openrouter_is_the_first_cloud_tier(router):
+    router.probe._ollama_up = False
+    _keys(router, openrouter="or-test", anthropic="sk-test")
+    d = router.route(Task.CREATIVE, "prompt")
+    assert d.model.provider == Provider.OPENROUTER
+    assert d.model.name == router.settings.llm.openrouter_creative_model
+    assert router.route(Task.SCORE, "prompt").model.name == router.settings.llm.openrouter_fast_model
+
+
+def test_cloud_is_opt_in_by_key(router):
+    router.probe._ollama_up = False
+    _keys(router)
+    with pytest.raises(NoModelAvailable) as ei:
+        router.route(Task.SCORE, "prompt")
+    for key in ("OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        assert f"{key} not set" in str(ei.value)
+
+
+def test_cooling_provider_is_skipped_until_the_deadline(router, monkeypatch):
+    import jobhunter.llm.router as router_mod
+
+    now = [1000.0]
+    monkeypatch.setattr(router_mod.time, "monotonic", lambda: now[0])
+    router.probe._ollama_up = False
+    _keys(router, openrouter="or-test", anthropic="sk-test")
+    router.cooldown(Provider.OPENROUTER, 30, "rate-limited")
+    router.cooldown(Provider.OPENROUTER, 5, "rate-limited")  # a shorter cooldown never shortens it
+    d = router.route(Task.SCORE, "prompt")
+    assert d.model.provider == Provider.ANTHROPIC
+    assert (
+        "openrouter:" + router.settings.llm.openrouter_fast_model,
+        "openrouter cooling down 30s (rate-limited)",
+    ) in d.skipped
+    assert router.shortest_cooldown() == 30
+    now[0] += 31
+    assert router.route(Task.SCORE, "prompt").model.provider == Provider.OPENROUTER
+    assert router.shortest_cooldown() is None
+
+
+def test_disabled_provider_stays_skipped(router):
+    router.probe._ollama_up = False
+    _keys(router, openrouter="or-test", anthropic="sk-test")
+    router.disable(Provider.OPENROUTER, "HTTP 401")
+    d = router.route(Task.SCORE, "prompt")
+    assert d.model.provider == Provider.ANTHROPIC
+    assert any(r == "openrouter disabled: HTTP 401" for _, r in d.skipped)
+
+
+def test_cloud_first_falls_back_to_local_ollama_when_rate_limited(router):
+    router.settings.llm.prefer_local = False
+    router.matrix = decision_matrix(router.settings.llm)
+    _keys(router, openrouter="or-test")
+    assert router.route(Task.SCORE, "prompt").model.provider == Provider.OPENROUTER
+    router.cooldown(Provider.OPENROUTER, 60, "rate-limited")
+    assert router.route(Task.SCORE, "prompt").model.name == CODER

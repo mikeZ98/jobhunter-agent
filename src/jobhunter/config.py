@@ -65,7 +65,8 @@ class LLMConfig(BaseModel):
     ollama_base_url: str = "http://localhost:11434"
     vllm_base_url: str | None = None  # e.g. http://gpu-box:8000/v1
     prefer_local: bool = True
-    # true -> never call Anthropic/OpenAI (chat or embeddings), even if API keys are set.
+    # true -> never call OpenRouter/Anthropic/OpenAI (chat or embeddings), even if API keys are set.
+    # Cloud is opt-in either way: a cloud provider is only routed to once its API key is set.
     local_only: bool = False
     embedding_model: str = "nomic-embed-text"
     # Ollama tags per task tier, best first (must match `ollama list` exactly; ":latest" may be omitted).
@@ -77,6 +78,14 @@ class LLMConfig(BaseModel):
     anthropic_creative_model: str = "claude-sonnet-5-5"
     openai_fast_model: str = "gpt-4o-mini"
     openai_creative_model: str = "gpt-4o"
+    # OpenRouter: one OpenAI-compatible key for many hosted open-weight models; first cloud tier.
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_fast_model: str = "meta-llama/llama-3.1-8b-instruct"
+    openrouter_creative_model: str = "meta-llama/llama-3.3-70b-instruct"
+    # Conservative: OpenRouter serves a model through several hosts, some with a shorter context.
+    openrouter_context_window: int = 32_768
+    # Ask OpenRouter to route only to hosts that don't store/train on prompts (CV + profile data).
+    openrouter_deny_data_collection: bool = True
     # Context per Ollama request. Ollama's OpenAI endpoint ignores options.num_ctx (it ran at 4096 and
     # silently cut prompts), so the client creates a "<tag>-jh12k" alias with num_ctx baked in.
     ollama_num_ctx: int = 12_288
@@ -88,6 +97,12 @@ class LLMConfig(BaseModel):
     # waiting for another job's call doesn't count). Loading an 8B model on a busy 16 GB Mac takes ~2 min.
     request_timeout_s: float = 300.0
     max_validation_retries: int = 2
+    # A provider that answered 429 is skipped for Retry-After seconds (this when it sent none) …
+    rate_limit_cooldown_s: float = 60.0
+    # … and a call with no other model left waits for it once, if that is at most this long.
+    rate_limit_max_wait_s: float = 20.0
+    # A cloud provider that refused the connection is skipped this long (Ollama is re-probed instead).
+    connection_cooldown_s: float = 30.0
     # Parallel LLM calls. Ollama serves 1-2 requests at a time per model on a laptop; raise for vLLM/cloud.
     max_concurrency: int = 2
     # Requests sent to Ollama at once (it runs -np 1 by default; extra requests only queue there and time out).
@@ -142,6 +157,7 @@ class Settings(BaseSettings):
     # Secrets — standard names so the SDKs also pick them up.
     anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
+    openrouter_api_key: SecretStr | None = Field(default=None, validation_alias="OPENROUTER_API_KEY")
     linkedin_li_at: SecretStr | None = Field(default=None, validation_alias="LINKEDIN_LI_AT")
     linkedin_jsessionid: SecretStr | None = Field(default=None, validation_alias="LINKEDIN_JSESSIONID")
     otel_endpoint: str | None = Field(default=None, validation_alias="OTEL_EXPORTER_OTLP_ENDPOINT")

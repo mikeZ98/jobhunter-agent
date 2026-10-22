@@ -3,25 +3,28 @@
 Each *task* maps to an ordered list of candidate models. The router walks the list and picks the
 first candidate that passes every gate, logging *why* each earlier one was skipped:
 
-  gate 1  provider reachable / API key present
+  gate 1  provider reachable / API key present / not cooling down after a 429 / not disabled (bad key)
   gate 2  model actually installed (Ollama ``/api/tags``; vLLM ``/v1/models``)
   gate 3  context window >= prompt tokens + output budget (+10 % safety)
   gate 4  memory: already resident (``/api/ps``) OR fits in free (V)RAM minus headroom (counting the
           resident chat model the client unloads first, ``ollama_single_model``). Soft: models that
           fail only this gate are still tried last, smallest first.
 
-Local OSS models come first (cost ~0); cloud models are the safety net. If the chosen model fails at
-call time (timeout, OOM, validation exhausted), ``LLMClient`` moves on to the next candidate.
+Local OSS models come first (cost ~0, nothing leaves the machine); cloud models are the opt-in safety
+net — each cloud provider is only routed to once its API key is set. If the chosen model fails at call
+time, ``LLMClient`` classifies the failure (``llm.errors``) and moves on to the next candidate; a 429
+also puts the whole provider in cooldown here, so the rest of the batch doesn't hit it again. With
+``prefer_local = false`` the same mechanism makes local Ollama the fallback for a rate-limited cloud.
 
 Local tags come from ``[llm] fast_models / chat_models / creative_models / interview_models`` in
 jobhunter.toml (defaults: qwen2.5-coder:7b + llama3.1:8b). ``local_only = true`` drops the cloud tail.
 
-| Task                          | Local (config tier)      | Cloud fallback (unless local_only) |
-|-------------------------------|--------------------------|------------------------------------|
-| extract / score / validate    | fast_models              | claude-haiku-5-5 / gpt-4o-mini     |
-| form_answer / messaging       | chat_models              | claude-haiku-5-5                   |
-| creative (CV, cover letter)   | creative_models          | claude-sonnet-5-5 / gpt-4o         |
-| interview intel               | interview_models         | claude-sonnet-5-5                  |
+| Task                        | Local (config tier) | Cloud fallback, in order (unless local_only)               |
+|-----------------------------|---------------------|------------------------------------------------------------|
+| extract / score / validate  | fast_models         | OpenRouter llama-3.1-8b / claude-haiku-5-5 / gpt-4o-mini    |
+| form_answer / messaging     | chat_models         | OpenRouter llama-3.1-8b / claude-haiku-5-5 / gpt-4o-mini    |
+| creative (CV, cover letter) | creative_models     | OpenRouter llama-3.3-70b / claude-sonnet-5-5 / gpt-4o       |
+| interview intel             | interview_models    | OpenRouter llama-3.3-70b / claude-sonnet-5-5 / gpt-4o       |
 """
 
 from __future__ import annotations
@@ -56,6 +59,7 @@ class Task(StrEnum):
 class Provider(StrEnum):
     OLLAMA = "ollama"
     VLLM = "vllm"
+    OPENROUTER = "openrouter"
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
 
@@ -103,7 +107,12 @@ def local_model(tag: str, temperature: float) -> ModelSpec:
 
 
 def _cloud(cfg: LLMConfig) -> dict[str, ModelSpec]:
+    ctx = cfg.openrouter_context_window
     return {
+        "openrouter_fast": ModelSpec(Provider.OPENROUTER, cfg.openrouter_fast_model, ctx, temperature=0.1),
+        "openrouter_creative": ModelSpec(
+            Provider.OPENROUTER, cfg.openrouter_creative_model, ctx, temperature=0.6
+        ),
         "anthropic_fast": ModelSpec(Provider.ANTHROPIC, cfg.anthropic_fast_model, 200_000, temperature=0.1),
         "anthropic_creative": ModelSpec(
             Provider.ANTHROPIC, cfg.anthropic_creative_model, 200_000, temperature=0.6
@@ -119,8 +128,8 @@ def decision_matrix(cfg: LLMConfig) -> dict[Task, list[ModelSpec]]:
     chat = [local_model(t, 0.3) for t in cfg.chat_models]
     creative = [local_model(t, 0.6) for t in cfg.creative_models]
     interview = [local_model(t, 0.5) for t in cfg.interview_models]
-    fast_cloud = [c["anthropic_fast"], c["openai_fast"]]
-    creative_cloud = [c["anthropic_creative"], c["openai_creative"]]
+    fast_cloud = [c["openrouter_fast"], c["anthropic_fast"], c["openai_fast"]]
+    creative_cloud = [c["openrouter_creative"], c["anthropic_creative"], c["openai_creative"]]
     matrix = {
         Task.EXTRACT: fast + fast_cloud,
         Task.SCORE: fast + fast_cloud,
@@ -180,6 +189,11 @@ class ResourceProbe:
                 except (httpx.HTTPError, ValueError):
                     self._vllm_models = set()
             self._at = time.monotonic()
+
+    def invalidate(self) -> None:
+        """A call just failed to connect: re-probe on the next routing decision instead of trusting the cache."""
+        with self._lock:
+            self._at = 0.0
 
     def _probe_ollama(self) -> bool:
         try:
@@ -298,8 +312,35 @@ class ModelRouter:
         self.cfg = settings.llm
         self.matrix = decision_matrix(self.cfg)
         self.probe = ResourceProbe(self.cfg)
+        self._cooldowns: dict[Provider, tuple[float, str]] = {}  # provider -> (monotonic deadline, why)
+        self._disabled: dict[Provider, str] = {}
+
+    # ---------- provider health (fed by LLMClient from classified call failures) ----------
+
+    def cooldown(self, provider: Provider, seconds: float, reason: str) -> None:
+        """Skip ``provider`` for ``seconds`` (a later, longer cooldown wins over a shorter one)."""
+        until = time.monotonic() + max(0.0, seconds)
+        if until > self._cooldowns.get(provider, (0.0, ""))[0]:
+            self._cooldowns[provider] = (until, reason)
+
+    def disable(self, provider: Provider, reason: str) -> None:
+        """Skip ``provider`` for the rest of the process (e.g. a rejected API key)."""
+        self._disabled[provider] = reason
+
+    def cooldown_left(self, provider: Provider) -> float:
+        until, _ = self._cooldowns.get(provider, (0.0, ""))
+        return max(0.0, until - time.monotonic())
+
+    def shortest_cooldown(self) -> float | None:
+        """Seconds until the first cooling-down provider is usable again; None if none is cooling down."""
+        left = [x for p in self._cooldowns if (x := self.cooldown_left(p)) > 0]
+        return min(left) if left else None
 
     def _provider_ready(self, m: ModelSpec) -> str | None:
+        if reason := self._disabled.get(m.provider):
+            return f"{m.provider} disabled: {reason}"
+        if (left := self.cooldown_left(m.provider)) > 0:
+            return f"{m.provider} cooling down {left:.0f}s ({self._cooldowns[m.provider][1]})"
         match m.provider:
             case Provider.OLLAMA:
                 return None if self.probe._ollama_up else "ollama not reachable"
@@ -309,6 +350,8 @@ class ModelRouter:
                 return None if self.settings.anthropic_api_key else "ANTHROPIC_API_KEY not set"
             case Provider.OPENAI:
                 return None if self.settings.openai_api_key else "OPENAI_API_KEY not set"
+            case Provider.OPENROUTER:
+                return None if self.settings.openrouter_api_key else "OPENROUTER_API_KEY not set"
         return "unknown provider"
 
     def candidates(
