@@ -1,0 +1,10 @@
+# Allow-list: the build context is only what the image needs. Everything else — .env, data/ (profile,
+# CV), job_hunter.db, .state/ (cookies), output/, jobhunter.toml, .cache/ — never leaves the machine.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!src/
+**/__pycache__
+**/*.py[cod]

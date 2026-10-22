@@ -1,0 +1,51 @@
+# Daily pipeline in a container, LLMs on the host's Ollama (local-first: nothing leaves the machine
+# unless jobhunter.toml opts into a cloud provider and its key is in .env).
+#
+#   jobhunter init                                   # once, natively: data/profile.json, jobhunter.toml
+#   docker compose build
+#   docker compose run --rm jobhunter doctor         # Ollama reachable? models installed?
+#   docker compose run --rm jobhunter run            # the daily run; results in ./output
+#
+# Host Ollama:
+#   macOS (Docker Desktop): works as is — host.docker.internal reaches the Ollama app.
+#   Linux: Ollama must listen beyond loopback: `OLLAMA_HOST=0.0.0.0 ollama serve` (or the systemd
+#   override), since host-gateway is the docker bridge address, not 127.0.0.1. The container runs as
+#   uid 10001, so ./output must be writable by it: `sudo chown -R 10001 output`.
+#   Elsewhere: OLLAMA_URL=http://gpu-box:11434 docker compose run --rm jobhunter run
+#
+# Memory: the router's memory gate sees the container's (or Docker VM's) RAM, not the host's; it is a
+# soft gate, so this only changes the order models are tried in.
+
+name: jobhunter
+
+services:
+  jobhunter:
+    build: .
+    image: jobhunter-agent:local
+    command: ["run"]
+    restart: "no"  # a batch job: schedule it (cron / launchd / systemd timer), don't keep it up
+    init: true  # reap Chromium's child processes
+    shm_size: 1gb  # Chromium crashes on Docker's 64 MB /dev/shm
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Linux; Docker Desktop provides it already
+    env_file:
+      - path: .env  # API keys / LinkedIn cookies, if any; never baked into the image
+        required: false
+    environment:
+      JH_LLM__OLLAMA_BASE_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+    volumes:
+      - ./data:/app/data:ro  # profile.json + base_cv.md: the critic's ground truth, read-only
+      - ./jobhunter.toml:/app/jobhunter.toml:ro  # must exist (jobhunter init), else Docker mounts a dir
+      - ./output:/app/output  # cover letters, CVs, digests, quarantine/
+      - jobhunter-var:/app/var  # SQLite DB + browser storage state
+    # Hardening: nothing writable but the volumes and two tmpfs; no capabilities; no setuid escalation.
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/logs
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  jobhunter-var:

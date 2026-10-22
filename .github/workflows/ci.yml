@@ -51,3 +51,24 @@ jobs:
         run: uv run playwright install ${{ runner.os == 'Linux' && '--with-deps' || '' }} chromium
       # No Ollama, no network services: boards and LLM inference are faked in the suite.
       - run: uv run pytest -ra
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: jobhunter-agent:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test (non-root, CLI, headless Chromium)
+        run: |
+          test "$(docker run --rm --entrypoint id jobhunter-agent:ci -u)" = "10001"
+          docker run --rm jobhunter-agent:ci --help
+          docker run --rm --shm-size=1g --entrypoint python jobhunter-agent:ci -c \
+            "from playwright.sync_api import sync_playwright as s; p = s().start(); p.chromium.launch().close(); p.stop()"
+      - run: docker compose config --quiet
