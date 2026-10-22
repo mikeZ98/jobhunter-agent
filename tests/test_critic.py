@@ -247,3 +247,59 @@ def test_verdict_validator_demands_every_suspect():
     CriticVerdict.model_validate(
         {"terms": [{"term": " KAFKA ", "claims_experience": False}]}, context={"suspect_terms": ["Kafka"]}
     )
+
+
+# ------------------------------------------------------------------ edge cases
+
+
+@pytest.mark.parametrize(
+    ("sentence", "rejected"),
+    [
+        ("Mam ponad 10 lat doświadczenia.", True),  # <= 12 is "trivial" for counts, not for experience
+        ("Z LangChain pracuję od 1,5 roku.", False),  # 1.5 years is in the profile
+        ("Projekt zacząłem 5 lat temu.", False),  # a point in time, not an experience claim
+        ("I started it 2 years ago.", False),
+        ("8+ years of Python.", True),
+    ],
+)
+def test_experience_year_claims(profile, sentence, rejected):
+    violations, _ = deterministic_review(letter(HONEST, sentence, "Od zaraz."), profile, "", JOB)
+    assert (ViolationKind.EXPERIENCE_YEARS in kinds(violations)) is rejected
+
+
+def test_thousands_separators_match_profile_figures(profile):
+    # expected_b2b_monthly_pln = 18000 in the example profile; "18 000" uses a non-breaking space.
+    assert deterministic_review(letter(HONEST, "Oczekuję 18 000 PLN netto.", "x"), profile, "", JOB)[0] == []
+    assert kinds(deterministic_review(letter(HONEST, "Oczekuję 19 000 PLN.", "x"), profile, "", JOB)[0]) == [
+        ViolationKind.NUMBER
+    ]
+
+
+def test_suspects_are_deduplicated_by_canonical_name(profile):
+    job = make_job(required_skills=["Kafka", "kafka", "Apache Kafka (streams)"])
+    _, suspects = deterministic_review(letter(HONEST, "Kafka, kafka.", "x"), profile, "", job)
+    assert [s.lower() for s in suspects] == ["kafka"]
+
+
+def test_cv_headline_figures_are_checked(profile):
+    bad = cv()
+    bad = bad.model_copy(update={"headline": "Python Engineer — 12 000 req/s"})
+    assert kinds(deterministic_review(bad, profile, "", JOB)[0]) == [ViolationKind.NUMBER]
+
+
+@pytest.mark.asyncio
+async def test_llm_cannot_convict_terms_it_was_not_asked_about(profile):
+    # A hallucinating critic flagging a profile skill must not reject an honest draft through `terms`.
+    llm = FakeCritic({"terms": [{"term": "Python", "claims_experience": True}]})
+    report = await review(letter(), profile=profile, base_cv="", job=JOB, llm=llm)  # type: ignore[arg-type]
+    assert report.approved
+
+
+@pytest.mark.asyncio
+async def test_report_round_trips_with_its_verdict(profile):
+    report = await review(
+        letter(HONEST.replace("2,4 s", "0,8 s"), "x", "y"), profile=profile, base_cv="", job=JOB, llm=None
+    )
+    dumped = report.model_dump_json()
+    assert '"approved":false' in dumped
+    assert type(report).model_validate_json(dumped).violations == report.violations
