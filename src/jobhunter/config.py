@@ -125,6 +125,17 @@ class ScoringConfig(BaseModel):
     hours_per_month: int = 168
 
 
+class CriticConfig(BaseModel):
+    """Adversarial fact-check of every cover letter / CV draft (agents/critic.py). Fails closed."""
+
+    enabled: bool = True
+    # Second, LLM pass (fast tier). Off -> deterministic checks only, and any job-ad technology the
+    # draft mentions but the profile lacks rejects the draft, since nothing can clear it.
+    llm_review: bool = True
+    # Rewrites with the critic's findings before a draft is quarantined instead of saved.
+    max_revisions: int = Field(default=1, ge=0, le=3)
+
+
 class NotesConfig(BaseModel):
     enabled: bool = True
     folder: str = "Job Search"
@@ -153,6 +164,7 @@ class Settings(BaseSettings):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     scoring: ScoringConfig = Field(default_factory=ScoringConfig)
     notes: NotesConfig = Field(default_factory=NotesConfig)
+    critic: CriticConfig = Field(default_factory=CriticConfig)
 
     # Secrets — standard names so the SDKs also pick them up.
     anthropic_api_key: SecretStr | None = Field(default=None, validation_alias="ANTHROPIC_API_KEY")
