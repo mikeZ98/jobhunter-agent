@@ -2,14 +2,23 @@
 
     START
       │
-   collect ──► normalize ──► score ──┬──► prepare ×N  (Send fan-out: assets ‖ interview intel per job)
+   collect ──► normalize ──► score ──┬──► prepare ×N  (Send fan-out: drafting ‖ interview intel per job)
                                       │        │
                                       └────────┴──► inbox ──► publish ──┬──► autofill (HITL) ──► END
                                                                         └──────────────────────► END
 
+   prepare's drafting sub-graph (workflow/drafting.py), per job:
+
+      draft ──► critique ──┬──► END        approved · critic unavailable · out of revisions
+        ▲                  │
+        └──── revise ◄─────┘               rejected with findings (rewrite with them)
+
 * Every node is idempotent w.r.t. SQLite, so a crashed run can simply be re-run.
 * ``prepare`` runs N parallel branches (bounded by a semaphore so a laptop Ollama isn't swamped);
   results fan back in through the ``items`` reducer.
+* Every cover letter / CV passes the adversarial critic (agents/critic.py) before it is written as an
+  asset. Fail closed: a rejected or unverified draft goes to ``<job>/quarantine/`` with the critic's
+  report, never to ``cover_letter.md`` / ``cv.pdf``, so autofill cannot upload it.
 * ``autofill`` is opt-in (``--apply``) and interactive; it never submits (see agents/autofill.py).
 """
 
@@ -30,6 +39,7 @@ from langgraph.types import Send
 
 from jobhunter.agents import assets as assets_agent
 from jobhunter.agents import collector, scorer
+from jobhunter.agents.assets import CoverLetter
 from jobhunter.agents.autofill import review_loop
 from jobhunter.agents.interview import InterviewIntel, generate_intel
 from jobhunter.agents.linkedin_messaging import InboxMessage, RecruiterTriage, draft_replies, fetch_inbox
@@ -43,6 +53,7 @@ from jobhunter.salary import refresh_fx_rates
 from jobhunter.scrapers import ScrapeInfra, build_scrapers
 from jobhunter.scrapers.browser import BrowserManager
 from jobhunter.telemetry import get_logger, traced_node
+from jobhunter.workflow.drafting import build_drafting_graph, run_drafting
 from jobhunter.workflow.schemas import (
     AutofillOutput,
     BoardStats,
@@ -77,6 +88,7 @@ class PipelineState(TypedDict, total=False):
     inbox: list[tuple[InboxMessage, RecruiterTriage]]
     board_stats: Annotated[dict[str, Any], _merge]
     errors: Annotated[list[str], operator.add]
+    quarantined: Annotated[list[str], operator.add]  # drafts the critic held back, for the digest
     note_id: str | None
 
 
@@ -110,6 +122,7 @@ DailyGraph = CompiledStateGraph[PipelineState, None, PipelineState, PipelineStat
 
 def build_daily_graph(deps: Deps) -> DailyGraph:
     s = deps.settings
+    drafting = build_drafting_graph(deps.profile, deps.base_cv, deps.llm, s.critic)
 
     @traced_node("collect")
     async def collect(state: PipelineState) -> dict[str, Any]:
@@ -217,20 +230,38 @@ def build_daily_graph(deps: Deps) -> DailyGraph:
                 job.company,
             )
             results = await asyncio.gather(
-                assets_agent.generate_assets(sl, deps.profile, deps.base_cv, deps.llm),
+                run_drafting(drafting, sl),
                 generate_intel(sl, deps.profile, deps.llm),
                 return_exceptions=True,
             )
-        assets_res, intel_res = results
+        drafts, intel_res = results
         files: dict[str, Any] = {}
         errors: list[str] = []
-        if isinstance(assets_res, BaseException):
-            errors.append(f"assets: {assets_res!r}"[:300])
+        quarantined: list[str] = []
+        if isinstance(drafts, BaseException):
+            errors.append(f"assets: {drafts!r}"[:300])
         else:
-            letter, cv = assets_res
-            if isinstance(letter, BaseException):
-                errors.append(f"cover letter: {letter!r}"[:300])
-            else:
+            for doc, err in drafts.errors.items():
+                errors.append(f"{doc.replace('_', ' ')}: {err}"[:300])
+            for doc, held in drafts.held.items():
+                qdir = out_dir / "quarantine"
+                qdir.mkdir(exist_ok=True)
+                body = (
+                    held.draft.to_markdown(deps.profile)
+                    if isinstance(held.draft, CoverLetter)
+                    else assets_agent.render_cv_markdown(held.draft, deps.profile)
+                )
+                (qdir / f"{doc}.md").write_text(body)
+                (qdir / f"{doc}.critic.json").write_text(held.report.model_dump_json(indent=2))
+                files[f"quarantine_{doc}"] = qdir / f"{doc}.md"
+                verdict = "quarantined by critic" if held.quarantined else "unverified (critic unavailable)"
+                errors.append(f"{doc.replace('_', ' ')} {verdict}: {held.report.feedback()}"[:300])
+                if held.quarantined:
+                    quarantined.append(f"{job.company} — {job.title}: {doc.replace('_', ' ')}")
+            if quarantined:
+                # Held for a human: failed_prepares() must not regenerate these on every run.
+                files["quarantined"] = [d for d, h in drafts.held.items() if h.quarantined]
+            if (letter := drafts.letter) is not None:
                 letter_md = letter.to_markdown(deps.profile)
                 (out_dir / "cover_letter.md").write_text(letter_md)
                 files["cover_letter_md"] = out_dir / "cover_letter.md"
@@ -239,9 +270,7 @@ def build_daily_graph(deps: Deps) -> DailyGraph:
                 )
                 if await assets_agent.markdown_to_pdf(letter_md, out_dir / "cover_letter.pdf"):
                     files["cover_letter_pdf"] = out_dir / "cover_letter.pdf"
-            if isinstance(cv, BaseException):
-                errors.append(f"cv: {cv!r}"[:300])
-            else:
+            if (cv := drafts.cv) is not None:
                 files |= await assets_agent.write_cv_files(cv, deps.profile, out_dir)
                 files["cv_keywords"] = cv.mirrored_keywords
         intel: InterviewIntel | None = None
@@ -263,7 +292,9 @@ def build_daily_graph(deps: Deps) -> DailyGraph:
                 log.debug("status unchanged for {}: {}", job.source_key, e)
         item = DigestItem(scored=sl, intel=intel, output_dir=str(out_dir), error="; ".join(errors) or None)
         log.info("prepare #{}: done{}", inp["rank"], f" with errors: {item.error}" if item.error else "")
-        return PrepareOutput(items=[item], errors=[f"{job.company}: {e}" for e in errors]).update()
+        return PrepareOutput(
+            items=[item], errors=[f"{job.company}: {e}" for e in errors], quarantined=quarantined
+        ).update()
 
     @traced_node("inbox")
     async def inbox(state: PipelineState) -> dict[str, Any]:

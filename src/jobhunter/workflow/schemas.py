@@ -24,11 +24,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, InstanceOf, field_validator
 
+from jobhunter.agents.assets import CoverLetter, TailoredCV
+from jobhunter.agents.critic import CriticReport, DocumentKind
 from jobhunter.agents.linkedin_messaging import InboxMessage, RecruiterTriage
 from jobhunter.integrations.notes_render import DigestItem
 from jobhunter.models import Board, JobListing, ScoredListing
 
 NodeName = Literal["collect", "normalize", "score", "prepare", "inbox", "publish", "autofill"]
+DraftNodeName = Literal["draft", "critique"]
 
 
 class StrictModel(BaseModel):
@@ -124,6 +127,9 @@ class PrepareOutput(NodeOutput):
         min_length=1, max_length=1, description="Exactly one per fan-out branch."
     )
     errors: list[str] = Field(default_factory=list)
+    quarantined: list[str] = Field(
+        default_factory=list, description="Drafts the critic rejected for good: held for human review."
+    )
 
 
 class InboxOutput(NodeOutput):
@@ -148,4 +154,33 @@ NODE_OUTPUTS: dict[NodeName, type[NodeOutput]] = {
     "inbox": InboxOutput,
     "publish": PublishOutput,
     "autofill": AutofillOutput,
+}
+
+
+# ------------------------------------------------------------------ drafting sub-graph (workflow.drafting)
+
+
+class DraftOutput(NodeOutput):
+    attempt: int = Field(ge=1)
+    errors: dict[DocumentKind, str] = Field(default_factory=dict)
+    letter: InstanceOf[CoverLetter] | None = None
+    cv: InstanceOf[TailoredCV] | None = None
+
+    def update(self) -> dict[str, Any]:
+        # A document not drafted this round keeps its previous draft: omit it rather than write None.
+        return {
+            k: getattr(self, k)
+            for k in type(self).model_fields
+            if k in self.model_fields_set | {"attempt", "errors"}
+        }
+
+
+class CritiqueOutput(NodeOutput):
+    reports: dict[DocumentKind, InstanceOf[CriticReport]]
+    todo: list[DocumentKind] = Field(description="Documents rejected with findings: rewrite them next.")
+
+
+DRAFT_NODE_OUTPUTS: dict[DraftNodeName, type[NodeOutput]] = {
+    "draft": DraftOutput,
+    "critique": CritiqueOutput,
 }

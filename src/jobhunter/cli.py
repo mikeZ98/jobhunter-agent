@@ -156,6 +156,13 @@ def _print_digest(result: dict[str, Any]) -> None:
     console.print(t)
     for e in result.get("errors", []):
         console.print(f"[yellow]⚠ {e}[/yellow]")
+    if held := result.get("quarantined"):
+        console.print(
+            f"[red]✋ {len(held)} draft(s) quarantined by the critic[/red] — review "
+            "<job>/quarantine/*.md and *.critic.json; they are not re-generated automatically:"
+        )
+        for q in held:
+            console.print(f"   {q}")
     if result.get("note_id"):
         console.print("[green]Apple Note updated[/green] (folder: Job Search)")
 

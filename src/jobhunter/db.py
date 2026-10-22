@@ -170,12 +170,14 @@ class Database:
         return out
 
     def failed_prepares(self, days: int = 7, limit: int = 15) -> list[ScoredListing]:
-        """Shortlisted listings whose cover letter was never produced (LLM failure, Ctrl-C during
-        ``prepare``). They are already "known", so collection skips them; the score node re-queues them."""
+        """Shortlisted listings whose cover letter was never produced (LLM failure, critic unavailable,
+        Ctrl-C during ``prepare``). They are already "known", so collection skips them; the score node
+        re-queues them. Drafts the critic *quarantined* are held for a human and never re-queued."""
         since = (datetime.now(UTC) - timedelta(days=days)).isoformat(timespec="seconds")
         rows = self._conn.execute(
             "SELECT scored_json FROM listings WHERE status=? AND scored_json IS NOT NULL"
             " AND assets_json IS NOT NULL AND assets_json NOT LIKE '%cover_letter_md%'"
+            " AND assets_json NOT LIKE '%\"quarantined\"%'"
             " AND last_seen_at >= ? ORDER BY final_score DESC LIMIT ?",
             (ListingStatus.SCRAPED.value, since, limit),
         ).fetchall()

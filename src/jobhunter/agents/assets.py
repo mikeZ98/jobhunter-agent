@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from markdown_it import MarkdownIt
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
@@ -169,11 +170,19 @@ def _profile_payload(profile: CandidateProfile, base_cv: str) -> str:
     )
 
 
-async def generate_assets(
-    item: ScoredListing, profile: CandidateProfile, base_cv: str, llm: LLMClient
-) -> tuple[CoverLetter | BaseException, TailoredCV | BaseException]:
+REVISION = """
+
+FACT-CHECK OF YOUR PREVIOUS DRAFT — rejected. These statements are not supported by the candidate profile:
+{feedback}
+Rewrite the document without them. Do not replace them with other unsupported facts; leave a point out
+rather than guess."""
+
+
+def _brief(
+    item: ScoredListing, profile: CandidateProfile, base_cv: str, feedback: str | None
+) -> tuple[str, dict[str, Any]]:
     job = item.listing
-    ctx = {
+    ctx: dict[str, Any] = {
         "project_names": [p.name for p in profile.projects],
         "allowed_skills": {canon(k) for k in profile.skill_index()},
         "company": job.company,
@@ -183,23 +192,37 @@ async def generate_assets(
         f"CANDIDATE PROFILE:\n{_profile_payload(profile, base_cv)}\n\n"
         f"JOB AD:\n{job.text_for_matching(7000)}\n\nFIT ASSESSMENT:\n{assessment}"
     )
-    # One document failing must not discard the other: the letter is the flakier of the two.
-    # Sequential on purpose — concurrent fallbacks would thrash models in and out of a 16 GB Mac's memory.
-    letter: CoverLetter | BaseException
-    cv: TailoredCV | BaseException
-    try:
-        letter = await llm.structured(
-            Task.CREATIVE, CoverLetter, COVER_SYSTEM, user, max_tokens=1400, validation_context=ctx
-        )
-    except Exception as e:
-        letter = e
-    try:
-        cv = await llm.structured(
-            Task.CREATIVE, TailoredCV, CV_SYSTEM, user, max_tokens=1800, validation_context=ctx
-        )
-    except Exception as e:
-        cv = e
-    return letter, cv
+    if feedback:
+        user += REVISION.format(feedback=feedback)
+    return user, ctx
+
+
+async def draft_cover_letter(
+    item: ScoredListing,
+    profile: CandidateProfile,
+    base_cv: str,
+    llm: LLMClient,
+    feedback: str | None = None,
+) -> CoverLetter:
+    """One cover letter draft; ``feedback`` is the critic's rejection of the previous one."""
+    user, ctx = _brief(item, profile, base_cv, feedback)
+    return await llm.structured(
+        Task.CREATIVE, CoverLetter, COVER_SYSTEM, user, max_tokens=1400, validation_context=ctx
+    )
+
+
+async def draft_cv(
+    item: ScoredListing,
+    profile: CandidateProfile,
+    base_cv: str,
+    llm: LLMClient,
+    feedback: str | None = None,
+) -> TailoredCV:
+    """One tailored CV draft; ``feedback`` is the critic's rejection of the previous one."""
+    user, ctx = _brief(item, profile, base_cv, feedback)
+    return await llm.structured(
+        Task.CREATIVE, TailoredCV, CV_SYSTEM, user, max_tokens=1800, validation_context=ctx
+    )
 
 
 # ------------------------------------------------------------------ rendering
